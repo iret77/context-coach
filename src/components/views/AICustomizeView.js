@@ -70,6 +70,7 @@ export class AICustomizeView extends LitElement {
 
     _getProfileName(profile) {
         const names = {
+            rhetoric_coach: 'Rhetoric Coach',
             interview: 'Job Interview',
             sales: 'Sales Call',
             meeting: 'Business Meeting',
@@ -82,6 +83,7 @@ export class AICustomizeView extends LitElement {
 
     render() {
         const profiles = [
+            { value: 'rhetoric_coach', label: 'Rhetoric Coach' },
             { value: 'interview', label: 'Job Interview' },
             { value: 'sales', label: 'Sales Call' },
             { value: 'meeting', label: 'Business Meeting' },
@@ -117,7 +119,6 @@ export class AICustomizeView extends LitElement {
                             </div>
                         </div>
                     </section>
-
                 </div>
             </div>
         `;

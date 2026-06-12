@@ -5,6 +5,7 @@ const { saveDebugAudio } = require('../audioUtils');
 const { getSystemPrompt } = require('./prompts');
 const { getAvailableModel, incrementLimitCount, getApiKey, getGroqApiKey, incrementCharUsage, getModelForToday } = require('../storage');
 const { connectCloud, sendCloudAudio, sendCloudText, sendCloudImage, closeCloud, isCloudActive, setOnTurnComplete } = require('./cloud');
+const coach = require('../coach');
 
 // Lazy-loaded to avoid circular dependency (localai.js imports from gemini.js)
 let _localai = null;
@@ -427,6 +428,61 @@ async function sendToGemma(transcription) {
     }
 }
 
+// Non-streaming completion used by the coach for cue decisions and the
+// debrief. Prefers Groq for latency (same key/limits handling as the
+// streaming path), falls back to Gemma via the Gemini API key.
+async function coachComplete(systemPrompt, userMessage) {
+    const groqApiKey = getGroqApiKey();
+    if (groqApiKey && groqApiKey.trim() !== '') {
+        const modelToUse = getModelForToday();
+        if (modelToUse) {
+            const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+                method: 'POST',
+                headers: {
+                    Authorization: `Bearer ${groqApiKey}`,
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    model: modelToUse,
+                    messages: [
+                        { role: 'system', content: systemPrompt },
+                        { role: 'user', content: userMessage },
+                    ],
+                    stream: false,
+                    temperature: 0.3,
+                    max_tokens: 512,
+                }),
+            });
+
+            if (response.ok) {
+                const json = await response.json();
+                const content = stripThinkingTags(json.choices?.[0]?.message?.content || '');
+                incrementCharUsage('groq', modelToUse.split('/').pop(), systemPrompt.length + userMessage.length + content.length);
+                return content;
+            }
+            console.error('Coach Groq error:', response.status, await response.text());
+        }
+    }
+
+    const apiKey = getApiKey();
+    if (!apiKey) {
+        throw new Error('No API key configured');
+    }
+
+    const ai = new GoogleGenAI({ apiKey: apiKey });
+    const response = await ai.models.generateContent({
+        model: 'gemma-4-26b-a4b-it',
+        contents: [
+            { role: 'user', parts: [{ text: systemPrompt }] },
+            { role: 'model', parts: [{ text: 'Understood. I will follow these instructions.' }] },
+            { role: 'user', parts: [{ text: userMessage }] },
+        ],
+    });
+    const text = response.text || '';
+    incrementCharUsage('gemini', 'gemma-4-26b-a4b-it', systemPrompt.length + userMessage.length + text.length);
+    return text;
+}
+
 async function initializeGeminiSession(apiKey, customPrompt = '', profile = 'interview', language = 'en-US', isReconnect = false) {
     if (isInitializingSession) {
         console.log('Session initialization already in progress');
@@ -487,7 +543,9 @@ async function initializeGeminiSession(apiKey, customPrompt = '', profile = 'int
 
                     if (message.serverContent?.generationComplete) {
                         if (currentTranscription.trim() !== '') {
-                            if (hasGroqKey()) {
+                            if (coach.isCoachProfile(currentProfile)) {
+                                coach.handleCoachTranscript(currentTranscription, currentSystemPrompt);
+                            } else if (hasGroqKey()) {
                                 sendToGroq(currentTranscription);
                             } else {
                                 sendToGemma(currentTranscription);
@@ -835,6 +893,12 @@ async function sendImageToGeminiHttp(base64Data, prompt) {
 function setupGeminiIpcHandlers(geminiSessionRef) {
     // Store the geminiSessionRef globally for reconnection access
     global.geminiSessionRef = geminiSessionRef;
+
+    coach.initCoach({
+        sendToRenderer,
+        complete: coachComplete,
+        saveTurn: saveConversationTurn,
+    });
 
     ipcMain.handle('initialize-cloud', async (event, token, profile, userContext) => {
         try {

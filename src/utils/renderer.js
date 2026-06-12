@@ -140,11 +140,12 @@ function arrayBufferToBase64(buffer) {
     return btoa(binary);
 }
 
-async function initializeGemini(profile = 'interview', language = 'en-US') {
+async function initializeGemini(profile = 'interview', language = 'en-US', customPromptOverride = null) {
     const apiKey = await storage.getApiKey();
     if (apiKey) {
         const prefs = await storage.getPreferences();
-        const success = await ipcRenderer.invoke('initialize-gemini', apiKey, prefs.customPrompt || '', profile, language);
+        const customPrompt = customPromptOverride !== null ? customPromptOverride : prefs.customPrompt || '';
+        const success = await ipcRenderer.invoke('initialize-gemini', apiKey, customPrompt, profile, language);
         if (success) {
             cheatingDaddy.setStatus('Live');
         } else {

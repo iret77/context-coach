@@ -7,6 +7,11 @@ import { AssistantView } from '../views/AssistantView.js';
 import { OnboardingView } from '../views/OnboardingView.js';
 import { AICustomizeView } from '../views/AICustomizeView.js';
 import { FeedbackView } from '../views/FeedbackView.js';
+import { CoachBriefView } from '../views/CoachBriefView.js';
+import { CoachLiveView } from '../views/CoachLiveView.js';
+import { CoachDebriefView } from '../views/CoachDebriefView.js';
+
+const COACH_PROFILE = 'rhetoric_coach';
 
 export class CheatingDaddyApp extends LitElement {
     static styles = css`
@@ -539,7 +544,8 @@ export class CheatingDaddyApp extends LitElement {
             }
             this.sessionActive = false;
             this._stopTimer();
-            this.currentView = 'main';
+            // A coaching session ends in the debrief, not on the home screen.
+            this.currentView = this.selectedProfile === COACH_PROFILE ? 'coach-debrief' : 'main';
         } else {
             if (window.require) {
                 const { ipcRenderer } = window.require('electron');
@@ -565,8 +571,37 @@ export class CheatingDaddyApp extends LitElement {
     // ── Session start ──
 
     async handleStart() {
+        // The rhetoric coach needs a brief before the session starts.
+        if (this.selectedProfile === COACH_PROFILE) {
+            this.currentView = 'coach-brief';
+            return;
+        }
+        await this._startSession();
+    }
+
+    async handleBriefSubmit(brief) {
+        if (!window.require) return;
+        const { ipcRenderer } = window.require('electron');
+        const result = await ipcRenderer.invoke('coach-set-brief', brief);
+        if (!result.success) {
+            this.setStatus('Error setting coach brief: ' + result.error);
+            return;
+        }
+        // Coaching requires both sides of the conversation; mic capture is
+        // opt-in for other profiles but mandatory here.
+        await cheatingDaddy.storage.updatePreference('audioMode', 'both');
+        await this._startSession(result.briefText);
+    }
+
+    async _startSession(customPromptOverride = null) {
         const prefs = await cheatingDaddy.storage.getPreferences();
-        const providerMode = prefs.providerMode === 'cloud' ? 'byok' : (prefs.providerMode || 'byok');
+        let providerMode = prefs.providerMode === 'cloud' ? 'byok' : (prefs.providerMode || 'byok');
+
+        // The coach pipeline (cue gating, debrief) runs in the BYOK Gemini
+        // path only; cloud/local providers fall back to it for this profile.
+        if (this.selectedProfile === COACH_PROFILE) {
+            providerMode = 'byok';
+        }
 
         if (providerMode === 'cloud') {
             const creds = await cheatingDaddy.storage.getCredentials();
@@ -605,7 +640,7 @@ export class CheatingDaddyApp extends LitElement {
                 return;
             }
 
-            await cheatingDaddy.initializeGemini(this.selectedProfile, this.selectedLanguage);
+            await cheatingDaddy.initializeGemini(this.selectedProfile, this.selectedLanguage, customPromptOverride);
         }
 
         cheatingDaddy.startCapture(this.selectedScreenshotInterval, this.selectedImageQuality);
@@ -757,7 +792,21 @@ export class CheatingDaddyApp extends LitElement {
             case 'history':
                 return html`<history-view></history-view>`;
 
+            case 'coach-brief':
+                return html`
+                    <coach-brief-view
+                        .onSubmit=${brief => this.handleBriefSubmit(brief)}
+                        .onCancel=${() => this.navigate('main')}
+                    ></coach-brief-view>
+                `;
+
+            case 'coach-debrief':
+                return html`<coach-debrief-view .onDone=${() => this.navigate('main')}></coach-debrief-view>`;
+
             case 'assistant':
+                if (this.selectedProfile === COACH_PROFILE) {
+                    return html`<coach-live-view></coach-live-view>`;
+                }
                 return html`
                     <assistant-view
                         .responses=${this.responses}
@@ -824,6 +873,7 @@ export class CheatingDaddyApp extends LitElement {
         if (!this._isLiveMode()) return '';
 
         const profileLabels = {
+            rhetoric_coach: 'Rhetoric Coach',
             interview: 'Interview',
             sales: 'Sales Call',
             meeting: 'Meeting',
