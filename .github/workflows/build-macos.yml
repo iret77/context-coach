@@ -1,0 +1,42 @@
+name: Build macOS (arm64)
+
+# Builds an unsigned (ad-hoc signed) Apple-Silicon .dmg of Context Coach and
+# uploads it as a downloadable artifact. Unsigned means Gatekeeper will block
+# the first launch — see docs/CONTEXT-COACH.md for the one-time bypass.
+
+on:
+    push:
+        branches: [context-coach]
+        paths:
+            - 'src/**'
+            - 'package.json'
+            - 'package-lock.json'
+            - 'forge.config.js'
+            - '.github/workflows/build-macos.yml'
+    workflow_dispatch:
+
+jobs:
+    build:
+        runs-on: macos-14 # Apple Silicon (arm64), matches the bundled SystemAudioDump
+        steps:
+            - uses: actions/checkout@v4
+
+            - uses: actions/setup-node@v4
+              with:
+                  node-version: 20
+
+            - name: Install dependencies
+              run: npm install
+
+            - name: Ensure SystemAudioDump is executable
+              run: chmod +x src/assets/SystemAudioDump
+
+            - name: Build macOS app (.dmg)
+              run: npm run make
+
+            - name: Upload .dmg artifact
+              uses: actions/upload-artifact@v4
+              with:
+                  name: context-coach-macos-arm64
+                  path: out/make/**/*.dmg
+                  if-no-files-found: error
